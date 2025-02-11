@@ -77,54 +77,58 @@ pub const Pool = struct {
 
     pub fn acquire(self: *Pool) Conn {
         self.mutex.lock();
+
         while (true) {
-            const conns = self.conns;
-            const available = self.available;
-            if (available == 0) {
+            if (self.available == 0) {
                 self.cond.wait(&self.mutex);
                 continue;
             }
-            const index = available - 1;
-            const conn = conns[index];
+
+            const index = self.available - 1;
+            const conn = self.conns[index];
+
             self.available = index;
             self.mutex.unlock();
+
             return conn;
         }
     }
 
     pub fn release(self: *Pool, conn: Conn) void {
-        self.mutex.lock();
+        defer self.cond.signal();
 
-        var conns = self.conns;
-        const available = self.available;
-        conns[available] = conn;
-        self.available = available + 1;
-        self.mutex.unlock();
-        self.cond.signal();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        self.conns[self.available] = conn;
+        self.available += 1;
     }
 };
 
 const t = std.testing;
 test "pool" {
     var pool = try Pool.init(t.allocator, .{
-        .size = 2,
+        .size = 4,
         .path = "/tmp/zqlite.test",
         .on_connection = &testPoolEachConnection,
         .on_first_connection = &testPoolFirstConnection,
     });
     defer pool.deinit();
 
-    const t1 = try std.Thread.spawn(.{}, testPool, .{pool});
-    const t2 = try std.Thread.spawn(.{}, testPool, .{pool});
-    const t3 = try std.Thread.spawn(.{}, testPool, .{pool});
+    var threads: [12]std.Thread = undefined;
+    for (threads[0..]) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, testPool, .{pool});
+    }
 
-    t1.join(); t2.join(); t3.join();
+    for (threads[0..]) |thread| {
+        thread.join();
+    }
 
     const c1 = pool.acquire();
     defer c1.release();
 
     const row = (try c1.row("select cnt from pool_test", .{})).?;
-    try t.expectEqual(@as(i64, 3000), row.int(0));
+    try t.expectEqual(@as(i64, 1000 * threads.len), row.int(0));
     row.deinit();
 
     try c1.execNoArgs("drop table pool_test");
@@ -133,11 +137,12 @@ test "pool" {
 fn testPool(p: *Pool) void {
     for (0..1000) |_| {
         const conn = p.acquire();
+        defer conn.release();
+
         conn.execNoArgs("update pool_test set cnt = cnt + 1") catch |err| {
             std.debug.print("update err: {any}\n", .{err});
             unreachable;
         };
-        p.release(conn);
     }
 }
 

@@ -12,9 +12,8 @@ pub const Conn = struct {
     pub fn init(path: [*:0]const u8, flags: c_int) !Conn {
         // sqlite requires either READONLY or READWRITE flag
         var full_flags = flags;
-        if (flags & c.SQLITE_OPEN_READONLY != c.SQLITE_OPEN_READONLY) {
+        if (flags & c.SQLITE_OPEN_READONLY == 0)
             full_flags |= c.SQLITE_OPEN_READWRITE;
-        }
 
         var conn: ?*c.sqlite3 = null;
         const rc = c.sqlite3_open_v2(path, &conn, full_flags, null);
